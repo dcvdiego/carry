@@ -248,6 +248,7 @@ def summary(results, pushed, consumer_note, issue_actions, dry_run=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--dry-run", action="store_true", help="build and report; push nothing, touch no issues")
+    parser.add_argument("--no-issues", action="store_true", help="leave this repo's issues alone (local runs)")
     parser.add_argument("--config", default=Path(__file__).with_name("carry.toml"))
     args = parser.parse_args()
     config = tomllib.loads(Path(args.config).read_text())
@@ -265,7 +266,7 @@ def main():
         if not token:
             wanted[f"{ISSUE_PREFIX} setup: add the CARRY_TOKEN secret"] = (
                 "Runs are read-only until the `CARRY_TOKEN` repository secret exists; see the README's Setup.")
-        issue_actions = sync_issues(wanted, args.dry_run)
+        issue_actions = ["skipped (--no-issues)"] if args.no_issues else sync_issues(wanted, args.dry_run)
         report = summary(results, pushed, consumer_note, issue_actions, readonly)
 
     print(report)
