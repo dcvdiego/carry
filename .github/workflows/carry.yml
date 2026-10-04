@@ -1,0 +1,35 @@
+name: carry
+
+on:
+  schedule:
+    - cron: "17 6 * * *" # daily
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [carry.toml, carry.py, .github/workflows/carry.yml]
+
+permissions:
+  contents: read
+  issues: write # issues in this repo
+  actions: write # keep the schedule from auto-disabling
+
+concurrency:
+  group: carry
+  cancel-in-progress: false
+
+jobs:
+  carry:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Rebuild forks and report
+        run: python3 carry.py
+        env:
+          CARRY_TOKEN: ${{ secrets.CARRY_TOKEN }} # pushes to forks + consumer PR
+          GH_TOKEN: ${{ github.token }} # reads PRs, manages issues here
+      - name: Keep the schedule alive
+        # GitHub disables scheduled workflows after 60 days without repo activity.
+        if: always()
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/carry.yml/enable"
+        env:
+          GH_TOKEN: ${{ github.token }}

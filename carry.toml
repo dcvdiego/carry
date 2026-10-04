@@ -1,0 +1,41 @@
+# Projects I run from my fork with unmerged upstream work on top.
+#
+# Every run rebuilds each fork's `carry/main` from scratch: upstream's base
+# branch, then each `[[project.carry]]` item merged in order. Nothing is pushed
+# if any item conflicts; an issue in this repo says which one.
+#
+# Item kinds:
+#   pr = N                 an upstream pull request (its head is merged)
+#     resolved = "branch"  fork branch to use instead when the PR head conflicts
+#   branch = "name"        a branch on my fork (my own fix, no upstream PR)
+#
+# When an item's PR is merged and in a release, an issue says to drop it.
+# When a project has nothing left to carry, the consumer pin switches it back
+# to upstream (via a PR to the consumer repo).
+
+[consumer]
+# Pins are proposed as a PR here; the agents box installs from these revs.
+repo = "dcvdiego/dotfiles"
+branch = "agents-profile"
+file = ".chezmoidata/carry.yaml"
+
+[[project]]
+name = "herdr-codexbar"
+upstream = "Argon-Sky/herdr-codexbar"
+fork = "dcvdiego/herdr-codexbar"
+base = "main"
+
+  [[project.carry]]
+  # OpenCode 2.0.22 ignores "./herdr-codexbar" in cli.json; use an absolute path.
+  branch = "fix/opencode-v2-plugin-path"
+
+[[project]]
+name = "herdr-hunk-diff"
+upstream = "jhochenbaum/herdr-hunk-diff"
+fork = "dcvdiego/herdr-hunk-diff"
+base = "main"
+
+  [[project.carry]]
+  # Multi-repository review picker.
+  pr = 20
+  resolved = "carry/pr-20"
