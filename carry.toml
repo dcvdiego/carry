@@ -20,16 +20,6 @@ branch = "agents-profile"
 file = ".chezmoidata/carry.yaml"
 
 [[project]]
-name = "herdr-codexbar"
-upstream = "Argon-Sky/herdr-codexbar"
-fork = "dcvdiego/herdr-codexbar"
-base = "main"
-
-  [[project.carry]]
-  # OpenCode 2.0.22 ignores "./herdr-codexbar" in cli.json; use an absolute path.
-  branch = "fix/opencode-v2-plugin-path"
-
-[[project]]
 name = "herdr-hunk-diff"
 upstream = "jhochenbaum/herdr-hunk-diff"
 fork = "dcvdiego/herdr-hunk-diff"
