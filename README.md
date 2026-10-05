@@ -19,6 +19,15 @@ branch, then every item in [`carry.toml`](carry.toml) merged in order. Rebuildin
 Issues open while a condition holds and close themselves when it clears, so
 GitHub notifications are the to-do list.
 
+## Compiled projects
+
+A project with `release_asset` is built by the fork's own copy of upstream's
+release workflow: carry publishes a pre-release `carry-<sha>` on the fork (the
+`release: published` event starts it) and pins that release's asset by its
+`.sha256` once the build has uploaded it. Until then the previous pin stays, so
+the consumer never points at a missing binary. Only the newest three carry
+pre-releases are kept.
+
 ## Consumer pins
 
 The resulting revisions go to [`dcvdiego/dotfiles`](https://github.com/dcvdiego/dotfiles)

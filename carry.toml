@@ -39,3 +39,17 @@ base = "main"
   # Multi-repository review picker.
   pr = 20
   resolved = "carry/pr-20"
+
+[[project]]
+name = "codexbar"
+upstream = "steipete/CodexBar"
+fork = "dcvdiego/CodexBar"
+base = "main"
+# Compiled: carry publishes a pre-release carry-<sha> on the fork, which runs
+# upstream's own release-cli.yml there; the pin advances once this asset's
+# .sha256 is uploaded. (Its Homebrew-tap job fails in the fork: no tap token.)
+release_asset = "CodexBarCLI-{tag}-linux-musl-x86_64.tar.gz"
+
+  [[project.carry]]
+  # hooks watch fired quota_reset on every poll for sliding/jittering boundaries.
+  branch = "fix/hook-reset-boundary"

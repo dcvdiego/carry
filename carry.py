@@ -134,17 +134,101 @@ def push(result, dry_run):
     return True
 
 
-def pins(results):
-    """Consumer pins: the fork's carry/main while anything is carried, else upstream."""
+KEEP_RELEASES = 3
+
+
+def release_asset_sha256(repo, tag, asset):
+    """sha256 from the release's `<asset>.sha256`, or None while it isn't built yet."""
+    result = run(["gh", "release", "download", tag, "-R", repo, "-p", f"{asset}.sha256", "-O", "-"], check=False)
+    digest = result.stdout.split()[0] if result.returncode == 0 and result.stdout.strip() else ""
+    return digest if len(digest) == 64 else None
+
+
+def release_build(result, project, token, readonly):
+    """For projects built by the fork's own release workflow (`release_asset`).
+
+    Publishing a pre-release `carry-<sha>` on the fork triggers upstream's release
+    workflow there (it runs on `release: published`; the token must be a PAT, as
+    events from GITHUB_TOKEN start no workflows). The pin only advances once that
+    build has uploaded the asset's .sha256. Returns ({tag, asset, sha256} | None, note).
+    """
+    template = project["release_asset"]
+    if result["conflict"]:
+        return None, "conflict: keeping the last pinned build"
+    if not result["active"]:  # back on upstream: its own latest release
+        tag = result["release"]
+        if not tag:
+            return None, "upstream has no release yet"
+        asset = template.format(tag=tag)
+        digest = release_asset_sha256(result["upstream"], tag, asset)
+        return ({"tag": tag, "asset": asset, "sha256": digest}, "upstream release") if digest else (None, "upstream asset missing")
+    tag = f"carry-{result['sha'][:12]}"
+    asset = template.format(tag=tag)
+    fork = result["fork"]
+    exists = run(["gh", "release", "view", tag, "-R", fork, "--json", "tagName"], check=False).returncode == 0
+    if not exists:
+        if readonly:
+            return None, f"would publish pre-release {tag}"
+        run(["gh", "release", "create", tag, "-R", fork, "--target", result["sha"], "--prerelease",
+             "--title", f"carry {result['sha'][:12]}",
+             "--notes", "Built by this repo's release workflow from carry/main (upstream + carried changes). "
+                        "Not an upstream release."], env={"GH_TOKEN": token})
+        return None, f"published pre-release {tag}; waiting for its build"
+    digest = release_asset_sha256(fork, tag, asset)
+    if not digest:
+        return None, f"{tag}: build not finished yet"
+    if not readonly:
+        prune_releases(fork, keep=tag, token=token)
+    return {"tag": tag, "asset": asset, "sha256": digest}, f"{tag} built"
+
+
+def prune_releases(fork, keep, token):
+    """Delete all but the newest KEEP_RELEASES carry pre-releases (never the pinned one)."""
+    releases = gh_json("release", "list", "-R", fork, "--limit", "100", "--json", "tagName,createdAt") or []
+    carry = sorted((r for r in releases if r["tagName"].startswith("carry-")), key=lambda r: r["createdAt"], reverse=True)
+    for old in carry[KEEP_RELEASES:]:
+        if old["tagName"] != keep:
+            run(["gh", "release", "delete", old["tagName"], "-R", fork, "--cleanup-tag", "--yes"],
+                env={"GH_TOKEN": token}, check=False)
+
+
+def pins(results, builds, existing):
+    """Consumer pins: the fork's carry/main while anything is carried, else upstream.
+
+    Built projects keep their existing pin until the new build is ready, so the
+    consumer never points at a release whose binary doesn't exist yet.
+    """
     out = {}
     for r in results:
+        name = r["name"]
         if r["active"] and not r["conflict"]:
-            out[r["name"]] = {"source": "fork", "repo": r["fork"], "rev": r["sha"]}
+            pin = {"source": "fork", "repo": r["fork"], "rev": r["sha"]}
         elif r["active"]:  # conflicted: keep the last good build
-            out[r["name"]] = {"source": "fork", "repo": r["fork"], "rev": r["previous"]}
+            pin = {"source": "fork", "repo": r["fork"], "rev": r["previous"]}
         else:
-            out[r["name"]] = {"source": "upstream", "repo": r["upstream"], "rev": r["release"] or r["base_sha"]}
+            pin = {"source": "upstream", "repo": r["upstream"], "rev": r["release"] or r["base_sha"]}
+        if name in builds:
+            build_pin = builds[name]
+            if build_pin is None:
+                if name in existing:
+                    out[name] = existing[name]
+                continue
+            pin.update(build_pin)
+        out[name] = pin
     return out
+
+
+def parse_pins(text):
+    """Read back render_pins' output."""
+    data, current = {}, None
+    for line in text.splitlines():
+        if line.startswith("  ") and not line.startswith("    ") and line.rstrip().endswith(":"):
+            current = line.strip()[:-1]
+            data[current] = {}
+        elif line.startswith("    ") and current:
+            key, _, value = line.strip().partition(": ")
+            data[current][key] = json.loads(value)
+    return data
 
 
 def render_pins(data):
@@ -155,11 +239,17 @@ def render_pins(data):
     return "\n".join(lines) + "\n"
 
 
-def propose_pins(consumer, data, token, workdir, dry_run):
-    """Open or update a PR on the consumer repo when the pins file changes."""
+def load_consumer(consumer, token, workdir):
+    """Clone the consumer repo; returns (path, current pins)."""
     repo = Path(workdir) / "consumer"
-    branch = "carry/pins"
     git(None, "clone", "-q", "--depth", "1", "-b", consumer["branch"], remote_url(consumer["repo"], token), str(repo))
+    path = repo / consumer["file"]
+    return repo, parse_pins(path.read_text()) if path.exists() else {}
+
+
+def propose_pins(consumer, repo, data, token, dry_run):
+    """Open or update a PR on the consumer repo when the pins file changes."""
+    branch = "carry/pins"
     path = repo / consumer["file"]
     text = render_pins(data)
     if path.exists() and path.read_text() == text:
@@ -230,7 +320,7 @@ def sync_issues(wanted, dry_run):
     return actions
 
 
-def summary(results, pushed, consumer_note, issue_actions, dry_run=False):
+def summary(results, pushed, consumer_note, issue_actions, dry_run=False, build_notes=None):
     out = ["# carry", ""]
     for r in results:
         status = "conflict" if r["conflict"] else ("upstream" if r["active"] == 0 else "ok")
@@ -240,6 +330,8 @@ def summary(results, pushed, consumer_note, issue_actions, dry_run=False):
             out.append(f"- {item['id']} {item['title']}: **{item['state']}**"
                        + (f" via {item['source']}" if item.get("source") else ""))
         out.append(f"carry/main {r['sha'][:12]}" + ((" (would push)" if dry_run else " (pushed)") if pushed.get(r["name"]) else " (unchanged)"))
+        if build_notes and r["name"] in build_notes:
+            out.append(f"build: {build_notes[r['name']]}")
         out.append("")
     out += ["## consumer", consumer_note, "", "## issues", *(issue_actions or ["none"])]
     return "\n".join(out)
@@ -258,16 +350,25 @@ def main():
     readonly = args.dry_run or not token
 
     with tempfile.TemporaryDirectory() as workdir:
+        projects = {p["name"]: p for p in config["project"]}
         results = [build(project, token, workdir) for project in config["project"]]
         pushed = {r["name"]: push(r, readonly) for r in results}
-        consumer_note = propose_pins(config["consumer"], pins(results), token, workdir, readonly) \
-            if "consumer" in config else "no consumer configured"
+        builds, build_notes = {}, {}
+        for r in results:
+            if "release_asset" in projects[r["name"]]:
+                builds[r["name"]], build_notes[r["name"]] = release_build(r, projects[r["name"]], token, readonly)
+        if "consumer" in config:
+            consumer_repo, existing = load_consumer(config["consumer"], token, workdir)
+            consumer_note = propose_pins(config["consumer"], consumer_repo, pins(results, builds, existing),
+                                         token, readonly)
+        else:
+            consumer_note = "no consumer configured"
         wanted = wanted_issues(results)
         if not token:
             wanted[f"{ISSUE_PREFIX} setup: add the CARRY_TOKEN secret"] = (
                 "Runs are read-only until the `CARRY_TOKEN` repository secret exists; see the README's Setup.")
         issue_actions = ["skipped (--no-issues)"] if args.no_issues else sync_issues(wanted, args.dry_run)
-        report = summary(results, pushed, consumer_note, issue_actions, readonly)
+        report = summary(results, pushed, consumer_note, issue_actions, readonly, build_notes)
 
     print(report)
     if os.environ.get("GITHUB_STEP_SUMMARY"):
