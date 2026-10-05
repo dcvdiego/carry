@@ -147,7 +147,7 @@ def release_asset_sha256(repo, tag, asset):
 def release_build(result, project, token, readonly):
     """For projects built by the fork's own release workflow (`release_asset`).
 
-    Publishing a pre-release `carry-<sha>` on the fork triggers upstream's release
+    Publishing a pre-release (`release_tag`, default `carry-<sha>`) on the fork triggers upstream's release
     workflow there (it runs on `release: published`; the token must be a PAT, as
     events from GITHUB_TOKEN start no workflows). The pin only advances once that
     build has uploaded the asset's .sha256. Returns ({tag, asset, sha256} | None, note).
@@ -162,7 +162,9 @@ def release_build(result, project, token, readonly):
         asset = template.format(tag=tag)
         digest = release_asset_sha256(result["upstream"], tag, asset)
         return ({"tag": tag, "asset": asset, "sha256": digest}, "upstream release") if digest else (None, "upstream asset missing")
-    tag = f"carry-{result['sha'][:12]}"
+    # Default "carry-<sha>"; `release_tag` can shape it for workflows that validate tags
+    # (CodexBar's requires ^v...): fields {upstream} (latest upstream release) and {sha}.
+    tag = project.get("release_tag", "carry-{sha}").format(upstream=result["release"] or "v0.0.0", sha=result["sha"][:12])
     asset = template.format(tag=tag)
     fork = result["fork"]
     exists = run(["gh", "release", "view", tag, "-R", fork, "--json", "tagName"], check=False).returncode == 0
@@ -184,8 +186,9 @@ def release_build(result, project, token, readonly):
 
 def prune_releases(fork, keep, token):
     """Delete all but the newest KEEP_RELEASES carry pre-releases (never the pinned one)."""
-    releases = gh_json("release", "list", "-R", fork, "--limit", "100", "--json", "tagName,createdAt") or []
-    carry = sorted((r for r in releases if r["tagName"].startswith("carry-")), key=lambda r: r["createdAt"], reverse=True)
+    releases = gh_json("release", "list", "-R", fork, "--limit", "100", "--json", "tagName,createdAt,isPrerelease") or []
+    carry = sorted((r for r in releases if r["isPrerelease"] and "carry" in r["tagName"]),
+                   key=lambda r: r["createdAt"], reverse=True)
     for old in carry[KEEP_RELEASES:]:
         if old["tagName"] != keep:
             run(["gh", "release", "delete", old["tagName"], "-R", fork, "--cleanup-tag", "--yes"],
